@@ -3,6 +3,7 @@ mbattray is a minimal tray icon to show your laptop's battery status.
 Requirements
 ============
 Debian/Ubuntu:
+
 	sudo apt-get install python3-gi
 
 Configuration
