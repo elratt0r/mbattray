@@ -1,0 +1,166 @@
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GLib
+import os,time,glob
+
+# Hack for pygtk ignoring ^C
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+SYSFS = "/sys/class/power_supply"
+
+class Battery():
+    def __init__(self, id):
+        self.id = id
+        self.voltage = self.get("voltage_now") / 1000
+        self.status = self.gets("status")
+        self.state = self.status == "Charging"
+        if os.path.exists (os.path.join(SYSFS,self.id,"energy_full")):
+            # microwatthours
+            self.max = self.get("energy_full") / 1000
+            self.orig_max = self.get("energy_full_design") / 1000
+            self.now = self.get("energy_now") / 1000
+            self.rate = self.get("power_now") / 1000
+        else:
+            # microamperehours
+            self.max = self.get("charge_full") / self.voltage
+            self.orig_max = self.get("charge_full_design") / self.voltage
+            self.now = self.get("charge_now") / self.voltage
+            self.rate = self.get("current_now") / self.voltage
+
+    def get (self, attr):
+        try:    return int(self.gets(attr))
+        except: return 0
+
+    def gets (self, attr):
+        return self._get(os.path.join(SYSFS, self.id,attr))
+
+    def _get (self, path):
+        try:
+            with open(path) as f: return "\n".join(f.readlines()).strip()
+        except: return ""
+
+    def get_percent (self):
+        try:    return (self.now / self.max) * 100
+        except: return 0
+
+    def get_designpercent (self):
+        try:    return (self.max / self.orig_max) * 100
+        except: return 0
+
+    def get_ttl (self):
+        try:
+            if self.state: ttl = 3600 * (self.max - self.now) / self.rate
+            else: ttl =  3600 * self.now / self.rate
+        except:
+            ttl = False
+        return ttl
+
+    def ttl (self):
+        ttl = self.get_ttl()
+        if ttl: return time.strftime ("%T", time.gmtime(ttl))
+        else: return "(unknown)"
+
+    def __str__ (self):
+        retval  = "Battery %s: %.2f%%\n" % (self.id, self.get_percent())
+        retval += "\t%s\n" % self.status
+        retval += "\t%.2f%% design capacity\n" % self.get_designpercent()
+        if self.rate > 0:
+            retval += "\t%s remaining\n" % self.ttl()
+        return retval
+
+class TrayIcon():
+    def __init__(self):
+        self.icon = Gtk.StatusIcon()
+        self.icon.embedded = True
+        self.icon.set_visible(True)
+        self.update_interval = 5
+        self.last_state = ""
+        self.notified = False
+        self.update_icon()
+        GLib.timeout_add_seconds(self.update_interval, self.update_icon)
+
+    def destroy (self, widget, data=None):
+        Gtk.main_quit()
+
+    def main(self):
+        Gtk.main()
+
+    def _format_time(self, attr):
+        return time.strftime("%T", time.gmtime(attr))
+
+    def online(self):
+        return any (map (lambda x: int(open(x).read().strip())==1, glob.glob ("/sys/class/power_supply/AC*/online")))
+
+    def update_icon(self):
+        self.batteries = {}
+        for entry in os.listdir ("/sys/class/power_supply"):
+            if "BAT" in entry:
+                self.batteries[entry] = Battery(entry)
+
+        if not self.batteries:
+            self.icon.set_from_stock(Gtk.STOCK_CONNECT)
+            self.icon.set_tooltip_text("No battery found.")
+            return True
+
+        status = now = rate = ttl = 0
+        charging = False
+        for battery in self.batteries:
+            status   += self.batteries[battery].get_percent()
+            now      += self.batteries[battery].now
+            rate     += self.batteries[battery].rate
+            ttl      += self.batteries[battery].get_ttl()
+            charging |= self.batteries[battery].state
+        status /= len(self.batteries)
+
+        is_online = self.online()
+        is_charged = (is_online and not charging)
+
+        totals  = "\nTotal: %.0f%%" % status
+        if not is_charged:
+            if charging:
+                remain = self._format_time(ttl)
+            else:
+                try:    remain = self._format_time(3600 * now / rate)
+                except: remain = "(unknown)"
+            totals += "\n\t%s remaining\n" % remain
+            totals += "\t%.2fW %s" % \
+                (rate / 1000, "charge" if charging else "discharge")
+
+        if   status < 10: state = "caution"
+        elif status < 40: state = "low"
+        elif status < 80: state = "good"
+        else:             state = "full"
+
+        if status < 10 and not is_online and not self.notified:
+            cmd  = "notify-send -u critical -i battery-caution -t 0 "
+            cmd += "'Critical battery level' "
+            cmd += "'%.0f%% remaining'" % status
+            os.system(cmd)
+            self.notified = True
+
+        if is_online and self.notified:
+            self.notified = False
+
+        tooltip_text = "\n".join(
+            [str(self.batteries[battery]) for battery in self.batteries]
+        )
+        tooltip_text += totals
+        self.icon.set_tooltip_text(tooltip_text)
+
+        if status != self.last_state:
+          iconname  = "battery-" + state
+          iconname += "-charging" if is_online else ""
+          self.icon.set_from_icon_name(iconname)
+        self.last_state = status
+
+        return True
+
+if __name__ == "__main__":
+    i = TrayIcon()
+    i.main()
+
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
