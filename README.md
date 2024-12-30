@@ -24,7 +24,7 @@ It is licensed under the terms of the MIT License:
 
 The MIT License (MIT)
 
-Copyright © 2018-2020 elratt0r
+Copyright © 2018-2024 elratt0r
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to
